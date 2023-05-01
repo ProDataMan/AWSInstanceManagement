@@ -1,0 +1,71 @@
+---
+- name: Provision EC2 instances and output public DNS/IPs
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+    security_group: EXISTING_SECURITY_GROUP_ID
+    ami_id: ami-0123456789abcdefg # Specify AMI ID here
+    instance_type: t2.micro
+
+  tasks:
+    - name: Select AWS region
+      pause:
+        prompt: |
+          Select AWS region to use:
+            1) US East (N. Virginia)
+            2) US West (Oregon)
+            3) US West (N. California)
+            4) EU (Ireland)
+          Please enter your choice (1-4):
+      register: aws_region
+
+    - name: Get list of key pairs
+      ec2_key_info:
+        region: "{{ aws_region.user_input }}"
+      register: key_pairs
+
+    - name: Select key pair
+      pause:
+        prompt: |
+          Select key pair to use:
+          {% for keypair in key_pairs.key_pairs %}
+            {{ loop.index }}) {{ keypair.name }}
+          {% endfor %}
+          Please enter your choice (1-{{ key_pairs.key_pairs | length }}):
+      register: selected_keypair
+
+    - name: Read CSV file
+      read_csv:
+        path: "input.csv"
+        delimiter: ","
+      register: csv_file_data
+
+    - name: Create EC2 instance for each name in CSV file
+      ec2:
+        key_name: "{{ key_pairs.key_pairs[selected_keypair.user_input - 1].name }}"
+        instance_type: "{{ instance_type }}"
+        image_id: "{{ ami_id }}"
+        group_id: "{{ security_group }}"
+        count: 1
+        wait: yes
+        region: "{{ aws_region.user_input }}"
+        instance_tags:
+          Name: "{{ item.0.Name }}"
+      with_items: "{{ csv_file_data.list }}"
+      register: instances
+
+    - name: Write CSV output
+      csv_file:
+        path: output.csv
+        headers: ["Name", "Public DNS", "Public IP"]
+        delimiter: ","
+      delegate_to: localhost
+
+      args:
+        lines:
+          - "{{ item.0.Name }}, {{ item.1.public_dns_name }}, {{ item.1.public_ip_address }}"
+        mode: append
+      with_together:
+        - "{{ csv_file_data.list }}"
+        - "{{ instances.instances }}"
